@@ -148,6 +148,11 @@ pub trait UnionType: ContainerType {}
 /// A GraphQL input object.
 pub trait InputObjectType: InputType {}
 
+/// A GraphQL oneof input object.
+#[cfg(feature = "unstable_oneof")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable_oneof")))]
+pub trait OneofObjectType: InputObjectType {}
+
 #[async_trait::async_trait]
 impl<T: OutputType + ?Sized> OutputType for Box<T> {
     fn type_name() -> Cow<'static, str> {

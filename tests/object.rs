@@ -117,3 +117,42 @@ async fn test_flatten_with_context() {
         })
     );
 }
+
+#[tokio::test]
+async fn test_oneof_field() {
+    #[derive(OneofObject)]
+    enum TestArg {
+        A(i32),
+        B(String),
+    }
+
+    struct Query;
+
+    #[Object]
+    impl Query {
+        #[graphql(oneof)]
+        async fn test(&self, arg: TestArg) -> String {
+            match arg {
+                TestArg::A(a) => format!("a:{}", a),
+                TestArg::B(b) => format!("b:{}", b),
+            }
+        }
+    }
+
+    let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
+    let query = "{ test(a: 10) }";
+    assert_eq!(
+        schema.execute(query).await.into_result().unwrap().data,
+        value!({
+            "test": "a:10"
+        })
+    );
+
+    let query = r#"{ test(b: "abc") }"#;
+    assert_eq!(
+        schema.execute(query).await.into_result().unwrap().data,
+        value!({
+            "test": "b:abc"
+        })
+    );
+}

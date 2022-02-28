@@ -271,6 +271,8 @@ pub struct ObjectField {
     #[darling(default, multiple)]
     pub derived: Vec<DerivedField>,
     pub flatten: bool,
+    #[cfg(feature = "unstable_oneof")]
+    pub oneof: bool,
 }
 
 #[derive(FromMeta, Default, Clone)]

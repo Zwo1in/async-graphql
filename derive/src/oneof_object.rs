@@ -170,6 +170,9 @@ pub fn generate(object_args: &args::OneofObject) -> GeneratorResult<TokenStream>
                     ::std::option::Option::Some(self)
                 }
             }
+
+            impl #crate_name::InputObjectType for #ident {}
+            impl #crate_name::OneofObjectType for #ident {}
         }
     } else {
         let mut code = Vec::new();
@@ -247,6 +250,7 @@ pub fn generate(object_args: &args::OneofObject) -> GeneratorResult<TokenStream>
                 }
 
                 impl #crate_name::InputObjectType for #concrete_type {}
+                impl #crate_name::OneofObjectType for #concrete_type {}
             };
             code.push(expanded);
         }

@@ -12,8 +12,8 @@ use syn::{
 use crate::args::{self, ComplexityType, RenameRuleExt, RenameTarget};
 use crate::output_type::OutputType;
 use crate::utils::{
-    extract_input_args, gen_deprecation, generate_default, generate_guards, get_cfg_attrs,
-    get_crate_name, get_rustdoc, get_type_path_and_name, parse_complexity_expr,
+    extract_input_args, extract_oneof_arg, gen_deprecation, generate_default, generate_guards,
+    get_cfg_attrs, get_crate_name, get_rustdoc, get_type_path_and_name, parse_complexity_expr,
     parse_graphql_attrs, remove_graphql_attrs, visible_fn, GeneratorResult,
 };
 
@@ -139,6 +139,13 @@ pub fn generate(
 
                 if method.sig.asyncness.is_none() {
                     return Err(Error::new_spanned(&method, "Must be asynchronous").into());
+                }
+                if method_args.oneof {
+                    return Err(Error::new_spanned(
+                        &method,
+                        "The `entity` and `oneof` properties cannot be specified at the same time.",
+                    )
+                    .into());
                 }
 
                 let args = extract_input_args(&crate_name, method)?;
@@ -326,10 +333,105 @@ pub fn generate(
                     }
                 };
 
-                let args = extract_input_args(&crate_name, method)?;
+                let mut parse_args = true;
+                let mut args = Vec::new();
                 let mut schema_args = Vec::new();
                 let mut use_params = Vec::new();
                 let mut get_params = Vec::new();
+
+                #[cfg(feature = "unstable_oneof")]
+                if method_args.oneof {
+                    parse_args = false;
+
+                    let (ident, ty) = extract_oneof_arg(&crate_name, method)?;
+                    schema_args.push(quote! {
+                        #crate_name::static_assertions::assert_impl_one!(#ty: #crate_name::OneofObjectType);
+                        if let #crate_name::registry::MetaType::InputObject { input_fields, .. } = registry.create_fake_input_type::<#ty>() {
+                            args.extend(input_fields);
+                        }
+                    });
+                    use_params.push(quote! { #ident });
+                    get_params.push(quote! {
+                        #[allow(non_snake_case, unused_variables)]
+                        let (__pos, #ident) = ctx.oneof_param_value::<#ty>()?;
+                    });
+                }
+
+                if parse_args {
+                    args = extract_input_args(&crate_name, method)?;
+                    for (
+                        ident,
+                        ty,
+                        args::Argument {
+                            name,
+                            desc,
+                            default,
+                            default_with,
+                            validator,
+                            visible,
+                            secret,
+                            ..
+                        },
+                    ) in &args
+                    {
+                        let name = name.clone().unwrap_or_else(|| {
+                            object_args
+                                .rename_args
+                                .rename(ident.ident.unraw().to_string(), RenameTarget::Argument)
+                        });
+                        let desc = desc
+                            .as_ref()
+                            .map(|s| quote! {::std::option::Option::Some(#s)})
+                            .unwrap_or_else(|| quote! {::std::option::Option::None});
+                        let default = generate_default(default, default_with)?;
+                        let schema_default = default
+                            .as_ref()
+                            .map(|value| {
+                                quote! {
+                                    ::std::option::Option::Some(::std::string::ToString::to_string(
+                                        &<#ty as #crate_name::InputType>::to_value(&#value)
+                                    ))
+                                }
+                            })
+                            .unwrap_or_else(|| quote! {::std::option::Option::None});
+
+                        let visible = visible_fn(visible);
+                        schema_args.push(quote! {
+                            args.insert(::std::borrow::ToOwned::to_owned(#name), #crate_name::registry::MetaInputValue {
+                                name: #name,
+                                description: #desc,
+                                ty: <#ty as #crate_name::InputType>::create_type_info(registry),
+                                default_value: #schema_default,
+                                visible: #visible,
+                                is_secret: #secret,
+                            });
+                        });
+
+                        let param_ident = &ident.ident;
+                        use_params.push(quote! { #param_ident });
+
+                        let default = match default {
+                            Some(default) => {
+                                quote! { ::std::option::Option::Some(|| -> #ty { #default }) }
+                            }
+                            None => quote! { ::std::option::Option::None },
+                        };
+
+                        let validators = validator.clone().unwrap_or_default().create_validators(
+                            &crate_name,
+                            quote!(&#ident),
+                            quote!(#ty),
+                            Some(quote!(.map_err(|err| err.into_server_error(__pos)))),
+                        )?;
+
+                        get_params.push(quote! {
+                            #[allow(non_snake_case, unused_variables)]
+                            let (__pos, #ident) = ctx.param_value::<#ty>(#name, #default)?;
+                            #validators
+                        });
+                    }
+                }
+
                 let ty = match &method.sig.output {
                     ReturnType::Type(_, ty) => OutputType::parse(ty)?,
                     ReturnType::Default => {
@@ -340,79 +442,6 @@ pub fn generate(
                         .into())
                     }
                 };
-
-                for (
-                    ident,
-                    ty,
-                    args::Argument {
-                        name,
-                        desc,
-                        default,
-                        default_with,
-                        validator,
-                        visible,
-                        secret,
-                        ..
-                    },
-                ) in &args
-                {
-                    let name = name.clone().unwrap_or_else(|| {
-                        object_args
-                            .rename_args
-                            .rename(ident.ident.unraw().to_string(), RenameTarget::Argument)
-                    });
-                    let desc = desc
-                        .as_ref()
-                        .map(|s| quote! {::std::option::Option::Some(#s)})
-                        .unwrap_or_else(|| quote! {::std::option::Option::None});
-                    let default = generate_default(default, default_with)?;
-                    let schema_default = default
-                        .as_ref()
-                        .map(|value| {
-                            quote! {
-                                ::std::option::Option::Some(::std::string::ToString::to_string(
-                                    &<#ty as #crate_name::InputType>::to_value(&#value)
-                                ))
-                            }
-                        })
-                        .unwrap_or_else(|| quote! {::std::option::Option::None});
-
-                    let visible = visible_fn(visible);
-                    schema_args.push(quote! {
-                        args.insert(#name, #crate_name::registry::MetaInputValue {
-                            name: #name,
-                            description: #desc,
-                            ty: <#ty as #crate_name::InputType>::create_type_info(registry),
-                            default_value: #schema_default,
-                            visible: #visible,
-                            is_secret: #secret,
-                        });
-                    });
-
-                    let param_ident = &ident.ident;
-                    use_params.push(quote! { #param_ident });
-
-                    let default = match default {
-                        Some(default) => {
-                            quote! { ::std::option::Option::Some(|| -> #ty { #default }) }
-                        }
-                        None => quote! { ::std::option::Option::None },
-                    };
-
-                    let validators = validator.clone().unwrap_or_default().create_validators(
-                        &crate_name,
-                        quote!(&#ident),
-                        quote!(#ty),
-                        Some(quote!(.map_err(|err| err.into_server_error(__pos)))),
-                    )?;
-
-                    get_params.push(quote! {
-                        #[allow(non_snake_case, unused_variables)]
-                        let (__pos, #ident) = ctx.param_value::<#ty>(#name, #default)?;
-                        #validators
-                    });
-                }
-
                 let schema_ty = ty.value_type();
                 let visible = visible_fn(&method_args.visible);
 

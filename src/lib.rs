@@ -213,6 +213,8 @@ pub use async_graphql_value::{
     from_value, to_value, value, ConstValue as Value, DeserializerError, Name, Number,
     SerializerError, Variables,
 };
+#[cfg(feature = "unstable_oneof")]
+pub use base::OneofObjectType;
 pub use base::{
     ComplexObject, Description, InputObjectType, InputType, InterfaceType, ObjectType, OutputType,
     UnionType,
